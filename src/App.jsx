@@ -1,4 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import app from "./firebase";
+import { getDatabase, onValue, ref, set } from "firebase/database";
+
+const database = getDatabase(app);
 
 const loadData = (key, fallback) => {
   try {
@@ -40,6 +44,9 @@ function App() {
   const [inventoryPreviewOpen, setInventoryPreviewOpen] = useState(false);
   const [lastInventoryPreviewOpen, setLastInventoryPreviewOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [cloudReady, setCloudReady] = useState(false);
+
+  const lastCloudDataRef = useRef("");
 
   const [settings, setSettings] = useState(() =>
     loadData("stock3d_settings_v2", {
@@ -116,6 +123,59 @@ function App() {
   useEffect(() => saveData("stock3d_inventory_history_v2_full", inventoryHistory), [inventoryHistory]);
   useEffect(() => saveData("stock3d_inventory_types_v2_full", inventoryTypes), [inventoryTypes]);
 
+  useEffect(() => {
+    const stockRef = ref(database, "stock3d");
+
+    const unsubscribe = onValue(
+      stockRef,
+      (snapshot) => {
+        const data = snapshot.val();
+        const serialized = JSON.stringify(data || {});
+
+        if (serialized === lastCloudDataRef.current) {
+          setCloudReady(true);
+          return;
+        }
+
+        lastCloudDataRef.current = serialized;
+
+        if (data?.settings) setSettings(data.settings);
+        if (data?.filaments) setFilaments(data.filaments);
+        if (data?.materials) setMaterials(data.materials);
+        if (data?.inventoryDraft) setInventoryDraft(data.inventoryDraft);
+        if (data?.inventoryHistory) setInventoryHistory(data.inventoryHistory);
+        if (data?.inventoryTypes) setInventoryTypes(data.inventoryTypes);
+
+        setCloudReady(true);
+      },
+      () => {
+        setCloudReady(true);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!cloudReady) return;
+
+    const payload = {
+      settings,
+      filaments,
+      materials,
+      inventoryDraft,
+      inventoryHistory,
+      inventoryTypes,
+    };
+
+    const serialized = JSON.stringify(payload);
+
+    if (serialized === lastCloudDataRef.current) return;
+
+    lastCloudDataRef.current = serialized;
+    set(ref(database, "stock3d"), payload);
+  }, [cloudReady, settings, filaments, materials, inventoryDraft, inventoryHistory, inventoryTypes]);
+
   const showMessage = (text) => {
     setMessage(text);
     setTimeout(() => setMessage(""), 2200);
@@ -159,10 +219,17 @@ function App() {
   const last3Inventories = inventoryHistory.slice(0, 3);
 
   const lowFilaments = filaments.filter(
-    (i) => toNumber(i.minimum) > 0 && toNumber(i.quantity) > 0 && toNumber(i.quantity) <= toNumber(i.minimum)
+    (i) =>
+      toNumber(i.minimum) > 0 &&
+      toNumber(i.quantity) > 0 &&
+      toNumber(i.quantity) <= toNumber(i.minimum)
   );
+
   const lowMaterials = materials.filter(
-    (i) => toNumber(i.minimum) > 0 && toNumber(i.quantity) > 0 && toNumber(i.quantity) <= toNumber(i.minimum)
+    (i) =>
+      toNumber(i.minimum) > 0 &&
+      toNumber(i.quantity) > 0 &&
+      toNumber(i.quantity) <= toNumber(i.minimum)
   );
 
   const ruptureFilaments = filaments.filter((i) => toNumber(i.quantity) <= 0);
@@ -231,10 +298,14 @@ function App() {
       showMessage("Ajoute une adresse mail dans Paramètres");
       return;
     }
+
     const lines = items.map(
       (item) =>
-        `- ${item.category || item.brand || "-"} | ${item.type || item.filamentType || "-"} | ${item.color || "-"} | Qté: ${item.quantity} | Prix: ${money(item.price)}`
+        `- ${item.category || item.brand || "-"} | ${
+          item.type || item.filamentType || "-"
+        } | ${item.color || "-"} | Qté: ${item.quantity} | Prix: ${money(item.price)}`
     );
+
     const body = [
       title,
       `Date : ${todayFr()}`,
