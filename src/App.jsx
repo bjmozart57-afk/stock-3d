@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Html5Qrcode } from "html5-qrcode";
 import { database } from "./firebase";
 import { onValue, ref, set } from "firebase/database";
 
@@ -85,13 +86,19 @@ function App() {
 
   const [editingInventoryId, setEditingInventoryId] = useState(null);
 
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannerError, setScannerError] = useState("");
+  const [scannerRunning, setScannerRunning] = useState(false);
+  const scannerRef = useRef(null);
+  const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+
   const lastCloudDataRef = useRef("");
 
   const [settings, setSettings] = useState({
     companyName: "CREATION 3D",
     email: "",
     tva: 20,
-    version: "2.3",
+    version: "2.4.1",
   });
 
   const [filaments, setFilaments] = useState([]);
@@ -155,7 +162,7 @@ function App() {
 
         lastCloudDataRef.current = serialized;
 
-        if (data?.settings) setSettings(data.settings);
+        if (data?.settings) setSettings({ ...data.settings, version: "2.4.1" });
         if (data?.filaments) setFilaments(data.filaments);
         if (data?.materials) setMaterials(data.materials);
         if (data?.inventoryDraft) setInventoryDraft(data.inventoryDraft);
@@ -174,7 +181,10 @@ function App() {
     if (!cloudReady) return;
 
     const payload = {
-      settings,
+      settings: {
+        ...settings,
+        version: "2.4.1",
+      },
       filaments,
       materials,
       inventoryDraft,
@@ -188,6 +198,19 @@ function App() {
     lastCloudDataRef.current = serialized;
     set(ref(database, "stock3d"), payload);
   }, [cloudReady, settings, filaments, materials, inventoryDraft, inventoryHistory, inventoryTypes]);
+
+  useEffect(() => {
+    return () => {
+      if (scannerRef.current) {
+        try {
+          scannerRef.current.stop().catch(() => {});
+          scannerRef.current.clear().catch(() => {});
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, []);
 
   const showMessage = (text) => {
     setMessage(text);
@@ -504,6 +527,102 @@ function App() {
     setInventoryDraft([]);
     setPage("home");
     showMessage("Inventaire validé");
+  };
+
+  const stopScanner = async () => {
+    try {
+      if (scannerRef.current) {
+        if (scannerRunning) {
+          await scannerRef.current.stop();
+        }
+        await scannerRef.current.clear();
+      }
+    } catch {
+      // ignore
+    } finally {
+      scannerRef.current = null;
+      setScannerRunning(false);
+      setScannerOpen(false);
+      setScannerError("");
+    }
+  };
+
+  const startScanner = async () => {
+    if (!isAndroid) {
+      showMessage("Scanner disponible uniquement sur Android");
+      return;
+    }
+
+    if (movementForm.stockType !== "Filament") {
+      showMessage("Scanner uniquement pour Filament");
+      return;
+    }
+
+    setScannerError("");
+    setScannerOpen(true);
+
+    setTimeout(async () => {
+      try {
+        if (scannerRef.current) return;
+
+        const html5QrCode = new Html5Qrcode("reader");
+        scannerRef.current = html5QrCode;
+
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          {
+            fps: 10,
+            qrbox: { width: 250, height: 120 },
+            aspectRatio: 1.7778,
+          },
+          async (decodedText) => {
+            const scannedCode = String(decodedText || "").trim();
+            const found = filaments.find(
+              (item) => String(item.code || "").trim() === scannedCode
+            );
+
+            if (found) {
+              setMovementForm((prev) => ({
+                ...prev,
+                code: scannedCode,
+                brand: brandOptions.includes(found.brand) ? found.brand : "Autres",
+                customBrand: brandOptions.includes(found.brand) ? "" : found.brand || "",
+                filamentType: filamentTypeOptions.includes(found.filamentType)
+                  ? found.filamentType
+                  : "Autre",
+                customFilamentType: filamentTypeOptions.includes(found.filamentType)
+                  ? ""
+                  : found.filamentType || "",
+                finish: finishOptions.includes(found.finish) ? found.finish : "Autre",
+                customFinish: finishOptions.includes(found.finish) ? "" : found.finish || "",
+                color: found.color || "",
+                condition: found.condition || "Neuf",
+                format: found.format || "Bobine",
+                price:
+                  prev.movementType === "Entrée"
+                    ? String(found.price || "")
+                    : prev.price,
+              }));
+              showMessage("Produit reconnu automatiquement");
+            } else {
+              setMovementForm((prev) => ({
+                ...prev,
+                code: scannedCode,
+              }));
+              showMessage("Code scanné");
+            }
+
+            await stopScanner();
+          },
+          () => {}
+        );
+
+        setScannerRunning(true);
+      } catch {
+        setScannerError("Impossible de lancer le scanner");
+        setScannerRunning(false);
+      }
+    }, 150);
   };
 
   const simulateScan = () => {
@@ -899,6 +1018,44 @@ function App() {
                   🖨️ Imprimer
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {scannerOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-md rounded-3xl bg-white p-5 shadow-xl">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Scanner Android</h2>
+                <button
+                  onClick={stopScanner}
+                  className="rounded-xl border border-slate-200 px-3 py-1 text-sm"
+                >
+                  Fermer
+                </button>
+              </div>
+
+              {!isAndroid ? (
+                <div className="mt-4 rounded-2xl bg-orange-50 p-3 text-sm text-orange-700">
+                  Scanner disponible uniquement sur téléphone Android.
+                </div>
+              ) : (
+                <>
+                  <div className="mt-4 overflow-hidden rounded-2xl border">
+                    <div id="reader" style={{ width: "100%" }} />
+                  </div>
+
+                  {scannerError && (
+                    <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-700">
+                      {scannerError}
+                    </div>
+                  )}
+
+                  <div className="mt-3 text-sm text-slate-500">
+                    Place le code-barres devant la caméra arrière.
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -1872,10 +2029,10 @@ function App() {
                       }
                     />
                     <button
-                      onClick={simulateScan}
+                      onClick={startScanner}
                       className="rounded-2xl bg-[#7c62b3] px-4 py-2 text-white"
                     >
-                      📷 Scanner
+                      📷 Scanner Android
                     </button>
                   </div>
 
