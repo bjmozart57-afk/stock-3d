@@ -1,21 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import app from "./firebase";
-import { getDatabase, onValue, ref, set } from "firebase/database";
-
-const database = getDatabase(app);
-
-const loadData = (key, fallback) => {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-};
-
-const saveData = (key, value) => {
-  localStorage.setItem(key, JSON.stringify(value));
-};
+import { database } from "./firebase";
+import { onValue, ref, set } from "firebase/database";
 
 const toNumber = (value) => {
   const n = Number(String(value || "").replace(",", "."));
@@ -37,61 +22,91 @@ const inventoryTypeDefaults = {
   "Porte clef": ["Simple"],
 };
 
+const brandOptions = [
+  "Bambu Lab",
+  "Elegoo",
+  "Polymaker",
+  "eSun",
+  "Creality",
+  "Prusa",
+  "Sunlu",
+  "Amazon Basics",
+  "Autres",
+];
+
+const filamentTypeOptions = ["PLA", "PETG", "ABS", "TPU", "ASA", "Autre"];
+const finishOptions = ["Basique", "Mat", "Silk", "Brillant", "Carbone", "Autre"];
+const conditionOptions = ["Neuf", "Ouvert"];
+const formatOptions = ["Bobine", "Bobine + recharge"];
+
+const normalizeFormat = (format) => {
+  if (format === "Bobine + recharge") return "Bobine";
+  return format || "Bobine";
+};
+
+const resolveBrand = (obj) =>
+  obj.brand === "Autres" ? obj.customBrand.trim() : obj.brand.trim();
+
+const resolveFilamentType = (obj) =>
+  obj.filamentType === "Autre"
+    ? obj.customFilamentType.trim()
+    : obj.filamentType.trim();
+
+const resolveFinish = (obj) =>
+  obj.finish === "Autre" ? obj.customFinish.trim() : obj.finish.trim();
+
+const filamentGroupKey = (item) =>
+  [
+    item.brand?.trim()?.toLowerCase() || "",
+    item.filamentType?.trim()?.toLowerCase() || "",
+    item.finish?.trim()?.toLowerCase() || "",
+    item.color?.trim()?.toLowerCase() || "",
+    item.condition?.trim()?.toLowerCase() || "",
+  ].join("|");
+
+const materialGroupKey = (item) =>
+  [
+    item.category?.trim()?.toLowerCase() || "",
+    item.type?.trim()?.toLowerCase() || "",
+  ].join("|");
+
 function App() {
   const [page, setPage] = useState("home");
   const [message, setMessage] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+
   const [inventoryPreviewOpen, setInventoryPreviewOpen] = useState(false);
   const [lastInventoryPreviewOpen, setLastInventoryPreviewOpen] = useState(false);
+  const [filamentPreviewOpen, setFilamentPreviewOpen] = useState(false);
+  const [materialPreviewOpen, setMaterialPreviewOpen] = useState(false);
+
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [cloudReady, setCloudReady] = useState(false);
 
+  const [editingInventoryId, setEditingInventoryId] = useState(null);
+
   const lastCloudDataRef = useRef("");
 
-  const [settings, setSettings] = useState(() =>
-    loadData("stock3d_settings_v2", {
-      companyName: "CREATION 3D",
-      email: "",
-      tva: 20,
-      version: "2.0",
-    })
-  );
-
-  const [filaments, setFilaments] = useState(() =>
-    loadData("stock3d_filaments_v2_full", [])
-  );
-
-  const [materials, setMaterials] = useState(() =>
-    loadData("stock3d_materials_v2_full", [])
-  );
-
-  const [inventoryDraft, setInventoryDraft] = useState(() =>
-    loadData("stock3d_inventory_draft_v2_full", [])
-  );
-
-  const [inventoryHistory, setInventoryHistory] = useState(() =>
-    loadData("stock3d_inventory_history_v2_full", [])
-  );
-
-  const [inventoryTypes, setInventoryTypes] = useState(() =>
-    loadData("stock3d_inventory_types_v2_full", inventoryTypeDefaults)
-  );
-
-  const [filamentForm, setFilamentForm] = useState({
-    brand: "",
-    filamentType: "",
-    color: "",
-    quantity: "",
-    price: "",
-    minimum: "",
+  const [settings, setSettings] = useState({
+    companyName: "CREATION 3D",
+    email: "",
+    tva: 20,
+    version: "2.3",
   });
 
-  const [materialForm, setMaterialForm] = useState({
+  const [filaments, setFilaments] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [inventoryDraft, setInventoryDraft] = useState([]);
+  const [inventoryHistory, setInventoryHistory] = useState([]);
+  const [inventoryTypes, setInventoryTypes] = useState(inventoryTypeDefaults);
+
+  const [filamentFilters, setFilamentFilters] = useState({
+    brand: "",
+    filamentType: "",
+  });
+
+  const [materialFilters, setMaterialFilters] = useState({
     category: "",
-    type: "",
-    quantity: "",
-    price: "",
-    minimum: "",
   });
 
   const [inventoryForm, setInventoryForm] = useState({
@@ -107,21 +122,22 @@ function App() {
     movementType: "Entrée",
     stockType: "Filament",
     code: "",
-    brand: "",
-    filamentType: "",
+    brand: "Bambu Lab",
+    customBrand: "",
+    filamentType: "PLA",
+    customFilamentType: "",
+    finish: "Basique",
+    customFinish: "",
     color: "",
+    condition: "Neuf",
+    format: "Bobine",
     category: "",
     type: "",
     quantity: "",
     price: "",
+    useMinimum: false,
+    minimum: "",
   });
-
-  useEffect(() => saveData("stock3d_settings_v2", settings), [settings]);
-  useEffect(() => saveData("stock3d_filaments_v2_full", filaments), [filaments]);
-  useEffect(() => saveData("stock3d_materials_v2_full", materials), [materials]);
-  useEffect(() => saveData("stock3d_inventory_draft_v2_full", inventoryDraft), [inventoryDraft]);
-  useEffect(() => saveData("stock3d_inventory_history_v2_full", inventoryHistory), [inventoryHistory]);
-  useEffect(() => saveData("stock3d_inventory_types_v2_full", inventoryTypes), [inventoryTypes]);
 
   useEffect(() => {
     const stockRef = ref(database, "stock3d");
@@ -148,9 +164,7 @@ function App() {
 
         setCloudReady(true);
       },
-      () => {
-        setCloudReady(true);
-      }
+      () => setCloudReady(true)
     );
 
     return () => unsubscribe();
@@ -169,7 +183,6 @@ function App() {
     };
 
     const serialized = JSON.stringify(payload);
-
     if (serialized === lastCloudDataRef.current) return;
 
     lastCloudDataRef.current = serialized;
@@ -215,25 +228,96 @@ function App() {
     [draftTTC, settings.tva]
   );
 
+  const filteredFilaments = useMemo(() => {
+    return filaments.filter((item) => {
+      const brandOk =
+        !filamentFilters.brand ||
+        item.brand?.toLowerCase() === filamentFilters.brand.toLowerCase();
+
+      const typeOk =
+        !filamentFilters.filamentType ||
+        item.filamentType?.toLowerCase() ===
+          filamentFilters.filamentType.toLowerCase();
+
+      return brandOk && typeOk;
+    });
+  }, [filaments, filamentFilters]);
+
+  const filteredMaterials = useMemo(() => {
+    return materials.filter((item) => {
+      const categoryOk =
+        !materialFilters.category ||
+        item.category?.toLowerCase() === materialFilters.category.toLowerCase();
+
+      return categoryOk;
+    });
+  }, [materials, materialFilters]);
+
+  const filteredFilamentTTC = useMemo(
+    () =>
+      filteredFilaments.reduce(
+        (sum, item) => sum + toNumber(item.quantity) * toNumber(item.price),
+        0
+      ),
+    [filteredFilaments]
+  );
+
+  const filteredFilamentHT = useMemo(
+    () => filteredFilamentTTC / (1 + toNumber(settings.tva) / 100),
+    [filteredFilamentTTC, settings.tva]
+  );
+
+  const filteredMaterialTTC = useMemo(
+    () =>
+      filteredMaterials.reduce(
+        (sum, item) => sum + toNumber(item.quantity) * toNumber(item.price),
+        0
+      ),
+    [filteredMaterials]
+  );
+
+  const filteredMaterialHT = useMemo(
+    () => filteredMaterialTTC / (1 + toNumber(settings.tva) / 100),
+    [filteredMaterialTTC, settings.tva]
+  );
+
   const lastInventory = inventoryHistory[0] || null;
   const last3Inventories = inventoryHistory.slice(0, 3);
 
-  const lowFilaments = filaments.filter(
-    (i) =>
-      toNumber(i.minimum) > 0 &&
-      toNumber(i.quantity) > 0 &&
-      toNumber(i.quantity) <= toNumber(i.minimum)
-  );
+  const isLowStock = (item) =>
+    toNumber(item.minimum) > 0 &&
+    toNumber(item.quantity) > 0 &&
+    toNumber(item.quantity) <= toNumber(item.minimum);
 
-  const lowMaterials = materials.filter(
-    (i) =>
-      toNumber(i.minimum) > 0 &&
-      toNumber(i.quantity) > 0 &&
-      toNumber(i.quantity) <= toNumber(i.minimum)
-  );
+  const isOutOfStock = (item) => toNumber(item.quantity) <= 0;
 
-  const ruptureFilaments = filaments.filter((i) => toNumber(i.quantity) <= 0);
-  const ruptureMaterials = materials.filter((i) => toNumber(i.quantity) <= 0);
+  const lowFilaments = filaments.filter(isLowStock);
+  const lowMaterials = materials.filter(isLowStock);
+
+  const ruptureFilaments = filaments.filter(isOutOfStock);
+  const ruptureMaterials = materials.filter(isOutOfStock);
+
+  const badgeStatus = (item) => {
+    if (isOutOfStock(item)) {
+      return (
+        <span className="rounded-full bg-red-100 px-2 py-1 text-xs text-red-700">
+          ⛔ Rupture
+        </span>
+      );
+    }
+    if (isLowStock(item)) {
+      return (
+        <span className="rounded-full bg-orange-100 px-2 py-1 text-xs text-orange-700">
+          ⚠️ Stock bas
+        </span>
+      );
+    }
+    return (
+      <span className="rounded-full bg-green-100 px-2 py-1 text-xs text-green-700">
+        ✔ OK
+      </span>
+    );
+  };
 
   const openPrintWindow = (title, items, ttc, ht) => {
     const rows = items
@@ -242,6 +326,7 @@ function App() {
           <tr>
             <td>${item.category || item.brand || "-"}</td>
             <td>${item.type || item.filamentType || "-"}</td>
+            <td>${item.finish || "-"}</td>
             <td>${item.color || "-"}</td>
             <td>${item.quantity}</td>
             <td>${money(item.price)}</td>
@@ -274,6 +359,7 @@ function App() {
               <tr>
                 <th>Catégorie / Marque</th>
                 <th>Type</th>
+                <th>Finition</th>
                 <th>Couleur</th>
                 <th>Quantité</th>
                 <th>Prix</th>
@@ -332,74 +418,10 @@ function App() {
       categoryOther: "",
       typeOther: "",
     });
+    setEditingInventoryId(null);
   };
 
-  const addFilament = () => {
-    if (
-      !filamentForm.brand.trim() ||
-      !filamentForm.filamentType.trim() ||
-      !filamentForm.color.trim() ||
-      !filamentForm.quantity.trim() ||
-      !filamentForm.price.trim()
-    ) {
-      showMessage("Complète tous les champs filament");
-      return;
-    }
-
-    const item = {
-      id: Date.now(),
-      brand: filamentForm.brand.trim(),
-      filamentType: filamentForm.filamentType.trim(),
-      color: filamentForm.color.trim(),
-      quantity: toNumber(filamentForm.quantity),
-      price: toNumber(filamentForm.price),
-      minimum: toNumber(filamentForm.minimum),
-      code: "FIL-" + Math.floor(1000 + Math.random() * 9000),
-    };
-
-    setFilaments((prev) => [item, ...prev]);
-    setFilamentForm({
-      brand: "",
-      filamentType: "",
-      color: "",
-      quantity: "",
-      price: "",
-      minimum: "",
-    });
-    showMessage("Filament ajouté");
-  };
-
-  const addMaterial = () => {
-    if (
-      !materialForm.category.trim() ||
-      !materialForm.quantity.trim() ||
-      !materialForm.price.trim()
-    ) {
-      showMessage("Complète catégorie, quantité et prix");
-      return;
-    }
-
-    const item = {
-      id: Date.now(),
-      category: materialForm.category.trim(),
-      type: materialForm.type.trim(),
-      quantity: toNumber(materialForm.quantity),
-      price: toNumber(materialForm.price),
-      minimum: toNumber(materialForm.minimum),
-    };
-
-    setMaterials((prev) => [item, ...prev]);
-    setMaterialForm({
-      category: "",
-      type: "",
-      quantity: "",
-      price: "",
-      minimum: "",
-    });
-    showMessage("Matière première ajoutée");
-  };
-
-  const addInventoryProduct = () => {
+  const addOrUpdateInventoryProduct = () => {
     const finalCategory =
       inventoryForm.category === "Autre produit"
         ? inventoryForm.categoryOther.trim()
@@ -416,7 +438,7 @@ function App() {
     }
 
     const item = {
-      id: Date.now(),
+      id: editingInventoryId || Date.now(),
       category: finalCategory,
       type: finalType,
       quantity: toNumber(inventoryForm.quantity),
@@ -444,9 +466,18 @@ function App() {
       });
     }
 
+    if (editingInventoryId) {
+      setInventoryDraft((prev) =>
+        prev.map((p) => (p.id === editingInventoryId ? item : p))
+      );
+      showMessage("Produit inventaire modifié");
+      resetInventoryForm();
+      return;
+    }
+
     setInventoryDraft((prev) => [item, ...prev]);
-    resetInventoryForm();
     showMessage("Produit ajouté à l’inventaire");
+    resetInventoryForm();
   };
 
   const validateInventory = () => {
@@ -490,9 +521,21 @@ function App() {
       setMovementForm((prev) => ({
         ...prev,
         code: randomItem.code || sampleCode,
-        brand: randomItem.brand || "",
-        filamentType: randomItem.filamentType || "",
+        brand: brandOptions.includes(randomItem.brand) ? randomItem.brand : "Autres",
+        customBrand: brandOptions.includes(randomItem.brand) ? "" : randomItem.brand || "",
+        filamentType: filamentTypeOptions.includes(randomItem.filamentType)
+          ? randomItem.filamentType
+          : "Autre",
+        customFilamentType: filamentTypeOptions.includes(randomItem.filamentType)
+          ? ""
+          : randomItem.filamentType || "",
+        finish: finishOptions.includes(randomItem.finish) ? randomItem.finish : "Autre",
+        customFinish: finishOptions.includes(randomItem.finish)
+          ? ""
+          : randomItem.finish || "",
         color: randomItem.color || "",
+        condition: randomItem.condition || "Neuf",
+        format: randomItem.format || "Bobine",
         price:
           prev.movementType === "Entrée"
             ? String(randomItem.price || "")
@@ -517,20 +560,25 @@ function App() {
     }
 
     if (movementForm.stockType === "Filament") {
-      if (
-        !movementForm.brand.trim() ||
-        !movementForm.filamentType.trim() ||
-        !movementForm.color.trim()
-      ) {
-        showMessage("Complète marque, type et couleur");
+      const brand = resolveBrand(movementForm);
+      const filamentType = resolveFilamentType(movementForm);
+      const finish = resolveFinish(movementForm);
+
+      if (!brand || !filamentType || !finish || !movementForm.color.trim()) {
+        showMessage("Complète marque, type, finition et couleur");
         return;
       }
 
+      const candidate = {
+        brand,
+        filamentType,
+        finish,
+        color: movementForm.color.trim(),
+        condition: movementForm.condition,
+      };
+
       const matchIndex = filaments.findIndex(
-        (item) =>
-          item.brand === movementForm.brand.trim() &&
-          item.filamentType === movementForm.filamentType.trim() &&
-          item.color === movementForm.color.trim()
+        (item) => filamentGroupKey(item) === filamentGroupKey(candidate)
       );
 
       if (movementForm.movementType === "Entrée") {
@@ -542,6 +590,9 @@ function App() {
             price: movementForm.price.trim()
               ? toNumber(movementForm.price)
               : updated[matchIndex].price,
+            minimum: movementForm.useMinimum
+              ? toNumber(movementForm.minimum)
+              : updated[matchIndex].minimum || 0,
           };
           setFilaments(updated);
         } else {
@@ -549,26 +600,34 @@ function App() {
             showMessage("Ajoute un prix pour une nouvelle entrée");
             return;
           }
+
           setFilaments((prev) => [
             {
               id: Date.now(),
-              brand: movementForm.brand.trim(),
-              filamentType: movementForm.filamentType.trim(),
+              brand,
+              filamentType,
+              finish,
               color: movementForm.color.trim(),
+              condition: movementForm.condition,
+              format: normalizeFormat(movementForm.format),
               quantity: qty,
               price: toNumber(movementForm.price),
-              minimum: 0,
-              code: movementForm.code || "FIL-" + Math.floor(1000 + Math.random() * 9000),
+              minimum: movementForm.useMinimum ? toNumber(movementForm.minimum) : 0,
+              code:
+                movementForm.code ||
+                "FIL-" + Math.floor(1000 + Math.random() * 9000),
             },
             ...prev,
           ]);
         }
+
         showMessage("Entrée filament enregistrée");
       } else {
         if (matchIndex < 0) {
           showMessage("Filament introuvable");
           return;
         }
+
         const updated = [...filaments];
         updated[matchIndex] = {
           ...updated[matchIndex],
@@ -600,6 +659,9 @@ function App() {
             price: movementForm.price.trim()
               ? toNumber(movementForm.price)
               : updated[matchIndex].price,
+            minimum: movementForm.useMinimum
+              ? toNumber(movementForm.minimum)
+              : updated[matchIndex].minimum || 0,
           };
           setMaterials(updated);
         } else {
@@ -607,6 +669,7 @@ function App() {
             showMessage("Ajoute un prix pour une nouvelle entrée");
             return;
           }
+
           setMaterials((prev) => [
             {
               id: Date.now(),
@@ -614,17 +677,19 @@ function App() {
               type: movementForm.type.trim(),
               quantity: qty,
               price: toNumber(movementForm.price),
-              minimum: 0,
+              minimum: movementForm.useMinimum ? toNumber(movementForm.minimum) : 0,
             },
             ...prev,
           ]);
         }
+
         showMessage("Entrée matière première enregistrée");
       } else {
         if (matchIndex < 0) {
           showMessage("Produit introuvable");
           return;
         }
+
         const updated = [...materials];
         updated[matchIndex] = {
           ...updated[matchIndex],
@@ -639,14 +704,23 @@ function App() {
       movementType: "Entrée",
       stockType: prev.stockType,
       code: "",
-      brand: "",
-      filamentType: "",
+      brand: "Bambu Lab",
+      customBrand: "",
+      filamentType: "PLA",
+      customFilamentType: "",
+      finish: "Basique",
+      customFinish: "",
       color: "",
+      condition: "Neuf",
+      format: "Bobine",
       category: "",
       type: "",
       quantity: "",
       price: "",
+      useMinimum: false,
+      minimum: "",
     }));
+
     setPage("home");
   };
 
@@ -669,6 +743,19 @@ function App() {
     }
 
     setDeleteTarget(null);
+  };
+
+  const editInventoryItem = (item) => {
+    setEditingInventoryId(item.id);
+    setInventoryForm({
+      category: item.category || "",
+      type: item.type || "",
+      quantity: String(item.quantity ?? ""),
+      price: String(item.price ?? ""),
+      categoryOther: "",
+      typeOther: "",
+    });
+    setPage("inventory");
   };
 
   const cardClass = "rounded-3xl border border-slate-200 bg-white p-4 shadow-sm";
@@ -696,6 +783,120 @@ function App() {
                   className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm"
                 >
                   Annuler
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {filamentPreviewOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-3xl rounded-3xl bg-white p-5 shadow-xl">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Aperçu filaments filtrés</h2>
+                <button
+                  onClick={() => setFilamentPreviewOpen(false)}
+                  className="rounded-xl border border-slate-200 px-3 py-1 text-sm"
+                >
+                  Fermer
+                </button>
+              </div>
+
+              <div className="mt-3 text-sm text-slate-600">
+                <div>Date : {todayFr()}</div>
+                <div>Produits : {filteredFilaments.length}</div>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {filteredFilaments.map((item) => (
+                  <div
+                    key={item.id}
+                    className="grid gap-2 rounded-2xl border p-3 text-sm md:grid-cols-6"
+                  >
+                    <div>{item.brand}</div>
+                    <div>{item.filamentType}</div>
+                    <div>{item.finish}</div>
+                    <div>{item.color}</div>
+                    <div>{item.quantity}</div>
+                    <div>{money(item.price)}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 space-y-1 text-sm font-medium">
+                <div>TTC : {money(filteredFilamentTTC)}</div>
+                <div>HT : {money(filteredFilamentHT)}</div>
+              </div>
+
+              <div className="mt-4">
+                <button
+                  onClick={() =>
+                    openPrintWindow(
+                      "Liste filtrée filaments",
+                      filteredFilaments,
+                      filteredFilamentTTC,
+                      filteredFilamentHT
+                    )
+                  }
+                  className="w-full rounded-2xl bg-[#1e3a8a] py-2 text-sm text-white"
+                >
+                  🖨️ Imprimer
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {materialPreviewOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-3xl rounded-3xl bg-white p-5 shadow-xl">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Aperçu matières filtrées</h2>
+                <button
+                  onClick={() => setMaterialPreviewOpen(false)}
+                  className="rounded-xl border border-slate-200 px-3 py-1 text-sm"
+                >
+                  Fermer
+                </button>
+              </div>
+
+              <div className="mt-3 text-sm text-slate-600">
+                <div>Date : {todayFr()}</div>
+                <div>Produits : {filteredMaterials.length}</div>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {filteredMaterials.map((item) => (
+                  <div
+                    key={item.id}
+                    className="grid gap-2 rounded-2xl border p-3 text-sm md:grid-cols-4"
+                  >
+                    <div>{item.category}</div>
+                    <div>{item.type || "Aucun"}</div>
+                    <div>{item.quantity}</div>
+                    <div>{money(item.price)}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 space-y-1 text-sm font-medium">
+                <div>TTC : {money(filteredMaterialTTC)}</div>
+                <div>HT : {money(filteredMaterialHT)}</div>
+              </div>
+
+              <div className="mt-4">
+                <button
+                  onClick={() =>
+                    openPrintWindow(
+                      "Liste filtrée matières premières",
+                      filteredMaterials,
+                      filteredMaterialTTC,
+                      filteredMaterialHT
+                    )
+                  }
+                  className="w-full rounded-2xl bg-[#1e3a8a] py-2 text-sm text-white"
+                >
+                  🖨️ Imprimer
                 </button>
               </div>
             </div>
@@ -798,13 +999,22 @@ function App() {
 
               <div className="mt-4 flex gap-2">
                 <button
-                  onClick={() => sendByEmail("Inventaire en cours", inventoryDraft, draftTTC, draftHT)}
+                  onClick={() =>
+                    sendByEmail("Inventaire en cours", inventoryDraft, draftTTC, draftHT)
+                  }
                   className="flex-1 rounded-2xl border border-[#0f766e] bg-white py-2 text-sm text-[#0f766e]"
                 >
                   ✉️ Envoyer par mail
                 </button>
                 <button
-                  onClick={() => openPrintWindow("Inventaire en cours", inventoryDraft, draftTTC, draftHT)}
+                  onClick={() =>
+                    openPrintWindow(
+                      "Inventaire en cours",
+                      inventoryDraft,
+                      draftTTC,
+                      draftHT
+                    )
+                  }
                   className="flex-1 rounded-2xl bg-[#0f766e] py-2 text-sm text-white"
                 >
                   🖨️ Imprimer
@@ -1003,34 +1213,122 @@ function App() {
         {page === "filaments" && (
           <div className="space-y-5">
             <div className="flex items-center gap-3">
-              <button onClick={() => setPage("home")} className="rounded-2xl border bg-white px-3 py-2">
+              <button
+                onClick={() => setPage("home")}
+                className="rounded-2xl border bg-white px-3 py-2"
+              >
                 ← Accueil
               </button>
               <h2 className="text-2xl font-semibold text-[#1e3a8a]">Filament</h2>
             </div>
 
             <div className={`${cardClass} bg-[#dbeafe] border-[#bfdbfe]`}>
-              <h3 className="mb-3 text-lg font-semibold text-[#1e3a8a]">Ajouter un filament</h3>
-              <div className="grid gap-3 md:grid-cols-6">
-                <input className="rounded-2xl border px-3 py-2" placeholder="Marque" value={filamentForm.brand} onChange={(e) => setFilamentForm((p) => ({ ...p, brand: e.target.value }))} />
-                <input className="rounded-2xl border px-3 py-2" placeholder="Type" value={filamentForm.filamentType} onChange={(e) => setFilamentForm((p) => ({ ...p, filamentType: e.target.value }))} />
-                <input className="rounded-2xl border px-3 py-2" placeholder="Couleur" value={filamentForm.color} onChange={(e) => setFilamentForm((p) => ({ ...p, color: e.target.value }))} />
-                <input className="rounded-2xl border px-3 py-2" placeholder="Quantité" value={filamentForm.quantity} onChange={(e) => setFilamentForm((p) => ({ ...p, quantity: e.target.value }))} />
-                <input className="rounded-2xl border px-3 py-2" placeholder="Prix €" value={filamentForm.price} onChange={(e) => setFilamentForm((p) => ({ ...p, price: e.target.value }))} />
-                <input className="rounded-2xl border px-3 py-2" placeholder="Stock mini" value={filamentForm.minimum} onChange={(e) => setFilamentForm((p) => ({ ...p, minimum: e.target.value }))} />
+              <h3 className="mb-3 text-lg font-semibold text-[#1e3a8a]">
+                Filtrer les filaments
+              </h3>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <select
+                  className="rounded-2xl border px-3 py-2"
+                  value={filamentFilters.brand}
+                  onChange={(e) =>
+                    setFilamentFilters((prev) => ({ ...prev, brand: e.target.value }))
+                  }
+                >
+                  <option value="">Toutes les marques</option>
+                  {[...new Set(filaments.map((f) => f.brand).filter(Boolean))].map(
+                    (brand) => (
+                      <option key={brand} value={brand}>
+                        {brand}
+                      </option>
+                    )
+                  )}
+                </select>
+
+                <select
+                  className="rounded-2xl border px-3 py-2"
+                  value={filamentFilters.filamentType}
+                  onChange={(e) =>
+                    setFilamentFilters((prev) => ({
+                      ...prev,
+                      filamentType: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="">Tous les types</option>
+                  {[...new Set(filaments.map((f) => f.filamentType).filter(Boolean))].map(
+                    (type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    )
+                  )}
+                </select>
+
+                <button
+                  onClick={() =>
+                    setFilamentFilters({
+                      brand: "",
+                      filamentType: "",
+                    })
+                  }
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2"
+                >
+                  Réinitialiser
+                </button>
               </div>
-              <button onClick={addFilament} className="mt-3 rounded-2xl bg-[#1e3a8a] px-4 py-2 text-white">
-                Valider
-              </button>
+
+              <div className="mt-4 flex gap-2">
+                <button
+                  onClick={() => {
+                    if (filteredFilaments.length === 0) {
+                      showMessage("Aucun filament à afficher");
+                      return;
+                    }
+                    setFilamentPreviewOpen(true);
+                  }}
+                  className="rounded-2xl bg-[#1e3a8a] px-4 py-2 text-white"
+                >
+                  👁️ Aperçu avant impression
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (filteredFilaments.length === 0) {
+                      showMessage("Aucun filament à imprimer");
+                      return;
+                    }
+                    openPrintWindow(
+                      "Liste filtrée filaments",
+                      filteredFilaments,
+                      filteredFilamentTTC,
+                      filteredFilamentHT
+                    );
+                  }}
+                  className="rounded-2xl border border-[#1e3a8a] bg-white px-4 py-2 text-[#1e3a8a]"
+                >
+                  🖨️ Imprimer
+                </button>
+              </div>
             </div>
 
-            {filaments.length === 0 ? (
-              <div className={cardClass}>Aucun filament enregistré.</div>
+            {filteredFilaments.length === 0 ? (
+              <div className={cardClass}>Aucun filament correspondant au filtre.</div>
             ) : (
               <div className={cardClass}>
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-[#1e3a8a]">Liste filtrée</h3>
+                  <span className="text-sm text-slate-500">
+                    {filteredFilaments.length} résultat(s)
+                  </span>
+                </div>
+
                 <div className="space-y-2">
-                  {filaments.map((item) => (
-                    <div key={item.id} className="grid gap-2 rounded-2xl bg-slate-50 p-3 md:grid-cols-6">
+                  {filteredFilaments.map((item) => (
+                    <div
+                      key={item.id}
+                      className="grid gap-2 rounded-2xl bg-slate-50 p-3 md:grid-cols-9"
+                    >
                       <div>
                         <p className="text-xs text-slate-500">Marque</p>
                         <p className="font-medium">{item.brand}</p>
@@ -1040,19 +1338,40 @@ function App() {
                         <p className="font-medium">{item.filamentType}</p>
                       </div>
                       <div>
+                        <p className="text-xs text-slate-500">Finition</p>
+                        <p className="font-medium">{item.finish}</p>
+                      </div>
+                      <div>
                         <p className="text-xs text-slate-500">Couleur</p>
                         <p className="font-medium">{item.color}</p>
                       </div>
                       <div>
+                        <p className="text-xs text-slate-500">État</p>
+                        <p className="font-medium">{item.condition}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500">Format</p>
+                        <p className="font-medium">Bobine</p>
+                      </div>
+                      <div>
                         <p className="text-xs text-slate-500">Quantité</p>
                         <p className="font-medium">{item.quantity}</p>
+                        {toNumber(item.minimum) > 0 && (
+                          <p className="text-xs text-slate-400">Min : {item.minimum}</p>
+                        )}
                       </div>
                       <div>
                         <p className="text-xs text-slate-500">Prix</p>
                         <p className="font-medium">{money(item.price)}</p>
+                        <div className="mt-2">{badgeStatus(item)}</div>
                       </div>
                       <div className="flex items-end justify-end">
-                        <button onClick={() => setDeleteTarget({ kind: "filament", id: item.id })} className="rounded-xl bg-red-500 px-3 py-2 text-sm text-white">
+                        <button
+                          onClick={() =>
+                            setDeleteTarget({ kind: "filament", id: item.id })
+                          }
+                          className="rounded-xl bg-red-500 px-3 py-2 text-sm text-white"
+                        >
                           Supprimer
                         </button>
                       </div>
@@ -1067,33 +1386,106 @@ function App() {
         {page === "materials" && (
           <div className="space-y-5">
             <div className="flex items-center gap-3">
-              <button onClick={() => setPage("home")} className="rounded-2xl border bg-white px-3 py-2">
+              <button
+                onClick={() => setPage("home")}
+                className="rounded-2xl border bg-white px-3 py-2"
+              >
                 ← Accueil
               </button>
-              <h2 className="text-2xl font-semibold text-[#1e3a8a]">Matière première</h2>
+              <h2 className="text-2xl font-semibold text-[#1e3a8a]">
+                Matière première
+              </h2>
             </div>
 
             <div className={`${cardClass} bg-[#dbeafe] border-[#bfdbfe]`}>
-              <h3 className="mb-3 text-lg font-semibold text-[#1e3a8a]">Ajouter une matière première</h3>
-              <div className="grid gap-3 md:grid-cols-5">
-                <input className="rounded-2xl border px-3 py-2" placeholder="Catégorie" value={materialForm.category} onChange={(e) => setMaterialForm((p) => ({ ...p, category: e.target.value }))} />
-                <input className="rounded-2xl border px-3 py-2" placeholder="Type" value={materialForm.type} onChange={(e) => setMaterialForm((p) => ({ ...p, type: e.target.value }))} />
-                <input className="rounded-2xl border px-3 py-2" placeholder="Quantité" value={materialForm.quantity} onChange={(e) => setMaterialForm((p) => ({ ...p, quantity: e.target.value }))} />
-                <input className="rounded-2xl border px-3 py-2" placeholder="Prix €" value={materialForm.price} onChange={(e) => setMaterialForm((p) => ({ ...p, price: e.target.value }))} />
-                <input className="rounded-2xl border px-3 py-2" placeholder="Stock mini" value={materialForm.minimum} onChange={(e) => setMaterialForm((p) => ({ ...p, minimum: e.target.value }))} />
+              <h3 className="mb-3 text-lg font-semibold text-[#1e3a8a]">
+                Filtrer par catégorie
+              </h3>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <select
+                  className="rounded-2xl border px-3 py-2"
+                  value={materialFilters.category}
+                  onChange={(e) =>
+                    setMaterialFilters((prev) => ({
+                      ...prev,
+                      category: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="">Toutes les catégories</option>
+                  {[...new Set(materials.map((m) => m.category).filter(Boolean))].map(
+                    (category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    )
+                  )}
+                </select>
+
+                <button
+                  onClick={() =>
+                    setMaterialFilters({
+                      category: "",
+                    })
+                  }
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2"
+                >
+                  Réinitialiser
+                </button>
               </div>
-              <button onClick={addMaterial} className="mt-3 rounded-2xl bg-[#1e3a8a] px-4 py-2 text-white">
-                Valider
-              </button>
+
+              <div className="mt-4 flex gap-2">
+                <button
+                  onClick={() => {
+                    if (filteredMaterials.length === 0) {
+                      showMessage("Aucune matière à afficher");
+                      return;
+                    }
+                    setMaterialPreviewOpen(true);
+                  }}
+                  className="rounded-2xl bg-[#1e3a8a] px-4 py-2 text-white"
+                >
+                  👁️ Aperçu avant impression
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (filteredMaterials.length === 0) {
+                      showMessage("Aucune matière à imprimer");
+                      return;
+                    }
+                    openPrintWindow(
+                      "Liste filtrée matières premières",
+                      filteredMaterials,
+                      filteredMaterialTTC,
+                      filteredMaterialHT
+                    );
+                  }}
+                  className="rounded-2xl border border-[#1e3a8a] bg-white px-4 py-2 text-[#1e3a8a]"
+                >
+                  🖨️ Imprimer
+                </button>
+              </div>
             </div>
 
-            {materials.length === 0 ? (
-              <div className={cardClass}>Aucun produit enregistré.</div>
+            {filteredMaterials.length === 0 ? (
+              <div className={cardClass}>Aucune matière correspondant au filtre.</div>
             ) : (
               <div className={cardClass}>
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-[#1e3a8a]">Liste filtrée</h3>
+                  <span className="text-sm text-slate-500">
+                    {filteredMaterials.length} résultat(s)
+                  </span>
+                </div>
+
                 <div className="space-y-2">
-                  {materials.map((item) => (
-                    <div key={item.id} className="grid gap-2 rounded-2xl bg-slate-50 p-3 md:grid-cols-5">
+                  {filteredMaterials.map((item) => (
+                    <div
+                      key={item.id}
+                      className="grid gap-2 rounded-2xl bg-slate-50 p-3 md:grid-cols-6"
+                    >
                       <div>
                         <p className="text-xs text-slate-500">Catégorie</p>
                         <p className="font-medium">{item.category}</p>
@@ -1105,13 +1497,24 @@ function App() {
                       <div>
                         <p className="text-xs text-slate-500">Quantité</p>
                         <p className="font-medium">{item.quantity}</p>
+                        {toNumber(item.minimum) > 0 && (
+                          <p className="text-xs text-slate-400">Min : {item.minimum}</p>
+                        )}
                       </div>
                       <div>
                         <p className="text-xs text-slate-500">Prix</p>
                         <p className="font-medium">{money(item.price)}</p>
                       </div>
+                      <div>
+                        <div className="mt-6">{badgeStatus(item)}</div>
+                      </div>
                       <div className="flex items-end justify-end">
-                        <button onClick={() => setDeleteTarget({ kind: "material", id: item.id })} className="rounded-xl bg-red-500 px-3 py-2 text-sm text-white">
+                        <button
+                          onClick={() =>
+                            setDeleteTarget({ kind: "material", id: item.id })
+                          }
+                          className="rounded-xl bg-red-500 px-3 py-2 text-sm text-white"
+                        >
                           Supprimer
                         </button>
                       </div>
@@ -1126,56 +1529,116 @@ function App() {
         {page === "inventory" && (
           <div className="space-y-5">
             <div className="flex items-center gap-3">
-              <button onClick={() => setPage("home")} className="rounded-2xl border bg-white px-3 py-2">
+              <button
+                onClick={() => {
+                  resetInventoryForm();
+                  setPage("home");
+                }}
+                className="rounded-2xl border bg-white px-3 py-2"
+              >
                 ← Accueil
               </button>
               <h2 className="text-2xl font-semibold text-[#0f766e]">Inventaire</h2>
             </div>
 
             <div className={`${cardClass} bg-[#ccfbf1] border-[#99f6e4]`}>
-              <h3 className="mb-3 text-lg font-semibold text-[#0f766e]">Inventaire production</h3>
+              <h3 className="mb-3 text-lg font-semibold text-[#0f766e]">
+                {editingInventoryId ? "Modifier produit inventaire" : "Inventaire production"}
+              </h3>
 
               <div className="grid gap-3 md:grid-cols-4">
-                <select className="rounded-2xl border px-3 py-2" value={inventoryForm.category} onChange={(e) => setInventoryForm((prev) => ({ ...prev, category: e.target.value, type: "" }))}>
+                <select
+                  className="rounded-2xl border px-3 py-2"
+                  value={inventoryForm.category}
+                  onChange={(e) =>
+                    setInventoryForm((prev) => ({ ...prev, category: e.target.value, type: "" }))
+                  }
+                >
                   <option value="">Catégorie</option>
                   {Object.keys(inventoryTypes).map((category) => (
-                    <option key={category} value={category}>{category}</option>
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
                   ))}
                   <option value="Autre produit">Autre produit</option>
                 </select>
 
-                <select className="rounded-2xl border px-3 py-2" value={inventoryForm.type} onChange={(e) => setInventoryForm((prev) => ({ ...prev, type: e.target.value }))}>
+                <select
+                  className="rounded-2xl border px-3 py-2"
+                  value={inventoryForm.type}
+                  onChange={(e) =>
+                    setInventoryForm((prev) => ({ ...prev, type: e.target.value }))
+                  }
+                >
                   <option value="">Type</option>
                   {(inventoryTypes[inventoryForm.category] || []).map((type) => (
-                    <option key={type} value={type}>{type}</option>
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
                   ))}
                   <option value="Autre produit">Autre produit</option>
                 </select>
 
-                <input className="rounded-2xl border px-3 py-2" placeholder="Quantité" value={inventoryForm.quantity} onChange={(e) => setInventoryForm((prev) => ({ ...prev, quantity: e.target.value }))} />
-                <input className="rounded-2xl border px-3 py-2" placeholder="Prix €" value={inventoryForm.price} onChange={(e) => setInventoryForm((prev) => ({ ...prev, price: e.target.value }))} />
+                <input
+                  className="rounded-2xl border px-3 py-2"
+                  placeholder="Quantité"
+                  value={inventoryForm.quantity}
+                  onChange={(e) =>
+                    setInventoryForm((prev) => ({ ...prev, quantity: e.target.value }))
+                  }
+                />
+
+                <input
+                  className="rounded-2xl border px-3 py-2"
+                  placeholder="Prix €"
+                  value={inventoryForm.price}
+                  onChange={(e) =>
+                    setInventoryForm((prev) => ({ ...prev, price: e.target.value }))
+                  }
+                />
               </div>
 
               {inventoryForm.category === "Autre produit" && (
                 <div className="mt-3 flex gap-2 rounded-2xl bg-[#e0fdfa] p-2">
-                  <input className="w-full rounded-xl border px-3 py-2" placeholder="Nouvelle catégorie" value={inventoryForm.categoryOther} onChange={(e) => setInventoryForm((prev) => ({ ...prev, categoryOther: e.target.value }))} />
+                  <input
+                    className="w-full rounded-xl border px-3 py-2"
+                    placeholder="Nouvelle catégorie"
+                    value={inventoryForm.categoryOther}
+                    onChange={(e) =>
+                      setInventoryForm((prev) => ({
+                        ...prev,
+                        categoryOther: e.target.value,
+                      }))
+                    }
+                  />
                   <button
                     onClick={() => {
                       const value = inventoryForm.categoryOther.trim();
                       if (!value) return;
                       setInventoryTypes((prev) => ({ ...prev, [value]: [] }));
-                      setInventoryForm((prev) => ({ ...prev, category: value, categoryOther: "" }));
+                      setInventoryForm((prev) => ({
+                        ...prev,
+                        category: value,
+                        categoryOther: "",
+                      }));
                     }}
                     className="rounded-xl bg-[#0f766e] px-3 py-2 text-xs text-white"
                   >
-                    OK
+                    Valider
                   </button>
                 </div>
               )}
 
               {inventoryForm.type === "Autre produit" && inventoryForm.category && (
                 <div className="mt-3 flex gap-2 rounded-2xl bg-[#e0fdfa] p-2">
-                  <input className="w-full rounded-xl border px-3 py-2" placeholder="Nouveau type" value={inventoryForm.typeOther} onChange={(e) => setInventoryForm((prev) => ({ ...prev, typeOther: e.target.value }))} />
+                  <input
+                    className="w-full rounded-xl border px-3 py-2"
+                    placeholder="Nouveau type"
+                    value={inventoryForm.typeOther}
+                    onChange={(e) =>
+                      setInventoryForm((prev) => ({ ...prev, typeOther: e.target.value }))
+                    }
+                  />
                   <button
                     onClick={() => {
                       const value = inventoryForm.typeOther.trim();
@@ -1184,18 +1647,36 @@ function App() {
                         const current = prev[inventoryForm.category] || [];
                         return { ...prev, [inventoryForm.category]: [...current, value] };
                       });
-                      setInventoryForm((prev) => ({ ...prev, type: value, typeOther: "" }));
+                      setInventoryForm((prev) => ({
+                        ...prev,
+                        type: value,
+                        typeOther: "",
+                      }));
                     }}
                     className="rounded-xl bg-[#0f766e] px-3 py-2 text-xs text-white"
                   >
-                    OK
+                    Valider
                   </button>
                 </div>
               )}
 
-              <button onClick={addInventoryProduct} className="mt-3 rounded-2xl bg-[#0f766e] px-4 py-2 text-white">
-                Valider produit
-              </button>
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={addOrUpdateInventoryProduct}
+                  className="rounded-2xl bg-[#0f766e] px-4 py-2 text-white"
+                >
+                  {editingInventoryId ? "Enregistrer modification" : "Valider produit"}
+                </button>
+
+                {editingInventoryId && (
+                  <button
+                    onClick={resetInventoryForm}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-2"
+                  >
+                    Annuler
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className={cardClass}>
@@ -1222,7 +1703,10 @@ function App() {
               ) : (
                 <div className="space-y-2">
                   {inventoryDraft.map((item) => (
-                    <div key={item.id} className="grid gap-2 rounded-2xl bg-slate-50 p-3 md:grid-cols-5">
+                    <div
+                      key={item.id}
+                      className="grid gap-2 rounded-2xl bg-slate-50 p-3 md:grid-cols-6"
+                    >
                       <div>
                         <p className="text-xs text-slate-500">Catégorie</p>
                         <p className="font-medium">{item.category}</p>
@@ -1239,8 +1723,19 @@ function App() {
                         <p className="text-xs text-slate-500">Prix</p>
                         <p className="font-medium">{money(item.price)}</p>
                       </div>
-                      <div className="flex items-end justify-end">
-                        <button onClick={() => setDeleteTarget({ kind: "inventoryDraft", id: item.id })} className="rounded-xl bg-red-500 px-3 py-2 text-sm text-white">
+                      <div className="flex items-end justify-end gap-2 md:col-span-2">
+                        <button
+                          onClick={() => editInventoryItem(item)}
+                          className="rounded-xl bg-amber-500 px-3 py-2 text-sm text-white"
+                        >
+                          Modifier
+                        </button>
+                        <button
+                          onClick={() =>
+                            setDeleteTarget({ kind: "inventoryDraft", id: item.id })
+                          }
+                          className="rounded-xl bg-red-500 px-3 py-2 text-sm text-white"
+                        >
                           Supprimer
                         </button>
                       </div>
@@ -1250,7 +1745,10 @@ function App() {
               )}
             </div>
 
-            <button onClick={validateInventory} className="w-full rounded-2xl bg-[#0f766e] px-4 py-3 text-white">
+            <button
+              onClick={validateInventory}
+              className="w-full rounded-2xl bg-[#0f766e] px-4 py-3 text-white"
+            >
               Valider l’inventaire
             </button>
 
@@ -1276,9 +1774,16 @@ function App() {
               {lastInventory?.items?.length ? (
                 <div className="mt-3 space-y-2">
                   {lastInventory.items.map((item) => (
-                    <div key={item.id} className="flex justify-between rounded-2xl bg-slate-50 px-3 py-2 text-sm">
-                      <span>{item.category} · {item.type || "Aucun"}</span>
-                      <span>{item.quantity} × {money(item.price)}</span>
+                    <div
+                      key={item.id}
+                      className="flex justify-between rounded-2xl bg-slate-50 px-3 py-2 text-sm"
+                    >
+                      <span>
+                        {item.category} · {item.type || "Aucun"}
+                      </span>
+                      <span>
+                        {item.quantity} × {money(item.price)}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -1302,7 +1807,10 @@ function App() {
         {page === "movement" && (
           <div className="space-y-5">
             <div className="flex items-center gap-3">
-              <button onClick={() => setPage("home")} className="rounded-2xl border bg-white px-3 py-2">
+              <button
+                onClick={() => setPage("home")}
+                className="rounded-2xl border bg-white px-3 py-2"
+              >
                 ← Accueil
               </button>
               <h2 className="text-2xl font-semibold text-[#1e3a8a]">Entrée / Sortie</h2>
@@ -1313,7 +1821,9 @@ function App() {
                 <select
                   className="rounded-2xl border px-3 py-2"
                   value={movementForm.movementType}
-                  onChange={(e) => setMovementForm((prev) => ({ ...prev, movementType: e.target.value }))}
+                  onChange={(e) =>
+                    setMovementForm((prev) => ({ ...prev, movementType: e.target.value }))
+                  }
                 >
                   <option>Entrée</option>
                   <option>Sortie</option>
@@ -1327,13 +1837,21 @@ function App() {
                       ...prev,
                       stockType: e.target.value,
                       code: "",
-                      brand: "",
-                      filamentType: "",
+                      brand: "Bambu Lab",
+                      customBrand: "",
+                      filamentType: "PLA",
+                      customFilamentType: "",
+                      finish: "Basique",
+                      customFinish: "",
                       color: "",
+                      condition: "Neuf",
+                      format: "Bobine",
                       category: "",
                       type: "",
                       quantity: "",
                       price: "",
+                      useMinimum: false,
+                      minimum: "",
                     }))
                   }
                 >
@@ -1361,24 +1879,279 @@ function App() {
                     </button>
                   </div>
 
-                  <div className="grid gap-3 md:grid-cols-5">
-                    <input className="rounded-2xl border px-3 py-2" placeholder="Marque" value={movementForm.brand} onChange={(e) => setMovementForm((prev) => ({ ...prev, brand: e.target.value }))} />
-                    <input className="rounded-2xl border px-3 py-2" placeholder="Type" value={movementForm.filamentType} onChange={(e) => setMovementForm((prev) => ({ ...prev, filamentType: e.target.value }))} />
-                    <input className="rounded-2xl border px-3 py-2" placeholder="Couleur" value={movementForm.color} onChange={(e) => setMovementForm((prev) => ({ ...prev, color: e.target.value }))} />
-                    <input className="rounded-2xl border px-3 py-2" placeholder="Quantité" value={movementForm.quantity} onChange={(e) => setMovementForm((prev) => ({ ...prev, quantity: e.target.value }))} />
-                    <input className="rounded-2xl border px-3 py-2" placeholder="Prix (si entrée)" value={movementForm.price} onChange={(e) => setMovementForm((prev) => ({ ...prev, price: e.target.value }))} />
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <select
+                      className="rounded-2xl border px-3 py-2"
+                      value={movementForm.brand}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({ ...prev, brand: e.target.value }))
+                      }
+                    >
+                      {brandOptions.map((brand) => (
+                        <option key={brand} value={brand}>
+                          {brand}
+                        </option>
+                      ))}
+                    </select>
+
+                    <select
+                      className="rounded-2xl border px-3 py-2"
+                      value={movementForm.filamentType}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({
+                          ...prev,
+                          filamentType: e.target.value,
+                        }))
+                      }
+                    >
+                      {filamentTypeOptions.map((type) => (
+                        <option key={type} value={type}>
+                          {type}
+                        </option>
+                      ))}
+                    </select>
+
+                    <select
+                      className="rounded-2xl border px-3 py-2"
+                      value={movementForm.finish}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({ ...prev, finish: e.target.value }))
+                      }
+                    >
+                      {finishOptions.map((finish) => (
+                        <option key={finish} value={finish}>
+                          {finish}
+                        </option>
+                      ))}
+                    </select>
+
+                    <input
+                      className="rounded-2xl border px-3 py-2"
+                      placeholder="Couleur"
+                      value={movementForm.color}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({ ...prev, color: e.target.value }))
+                      }
+                    />
                   </div>
+
+                  {movementForm.brand === "Autres" && (
+                    <div className="flex gap-2 rounded-2xl bg-slate-50 p-2">
+                      <input
+                        className="w-full rounded-xl border px-3 py-2"
+                        placeholder="Autre marque"
+                        value={movementForm.customBrand}
+                        onChange={(e) =>
+                          setMovementForm((prev) => ({ ...prev, customBrand: e.target.value }))
+                        }
+                      />
+                      <button className="rounded-xl bg-[#1e3a8a] px-3 py-2 text-xs text-white">
+                        Valider
+                      </button>
+                    </div>
+                  )}
+
+                  {movementForm.filamentType === "Autre" && (
+                    <div className="flex gap-2 rounded-2xl bg-slate-50 p-2">
+                      <input
+                        className="w-full rounded-xl border px-3 py-2"
+                        placeholder="Autre type"
+                        value={movementForm.customFilamentType}
+                        onChange={(e) =>
+                          setMovementForm((prev) => ({
+                            ...prev,
+                            customFilamentType: e.target.value,
+                          }))
+                        }
+                      />
+                      <button className="rounded-xl bg-[#1e3a8a] px-3 py-2 text-xs text-white">
+                        Valider
+                      </button>
+                    </div>
+                  )}
+
+                  {movementForm.finish === "Autre" && (
+                    <div className="flex gap-2 rounded-2xl bg-slate-50 p-2">
+                      <input
+                        className="w-full rounded-xl border px-3 py-2"
+                        placeholder="Autre finition"
+                        value={movementForm.customFinish}
+                        onChange={(e) =>
+                          setMovementForm((prev) => ({
+                            ...prev,
+                            customFinish: e.target.value,
+                          }))
+                        }
+                      />
+                      <button className="rounded-xl bg-[#1e3a8a] px-3 py-2 text-xs text-white">
+                        Valider
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <select
+                      className="rounded-2xl border px-3 py-2"
+                      value={movementForm.condition}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({
+                          ...prev,
+                          condition: e.target.value,
+                        }))
+                      }
+                    >
+                      {conditionOptions.map((condition) => (
+                        <option key={condition} value={condition}>
+                          {condition}
+                        </option>
+                      ))}
+                    </select>
+
+                    <select
+                      className="rounded-2xl border px-3 py-2"
+                      value={movementForm.format}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({
+                          ...prev,
+                          format: e.target.value,
+                        }))
+                      }
+                    >
+                      {formatOptions.map((format) => (
+                        <option key={format} value={format}>
+                          {format}
+                        </option>
+                      ))}
+                    </select>
+
+                    <input
+                      className="rounded-2xl border px-3 py-2"
+                      placeholder="Quantité"
+                      value={movementForm.quantity}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({ ...prev, quantity: e.target.value }))
+                      }
+                    />
+
+                    <input
+                      className="rounded-2xl border px-3 py-2"
+                      placeholder="Prix (si entrée)"
+                      value={movementForm.price}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({ ...prev, price: e.target.value }))
+                      }
+                    />
+                  </div>
+
+                  {movementForm.movementType === "Entrée" && (
+                    <div className="rounded-2xl bg-slate-50 p-3">
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={movementForm.useMinimum}
+                          onChange={(e) =>
+                            setMovementForm((prev) => ({
+                              ...prev,
+                              useMinimum: e.target.checked,
+                              minimum: e.target.checked ? prev.minimum : "",
+                            }))
+                          }
+                        />
+                        Activer stock minimum
+                      </label>
+
+                      {movementForm.useMinimum && (
+                        <input
+                          className="mt-3 w-full rounded-2xl border px-3 py-2"
+                          placeholder="Stock minimum"
+                          value={movementForm.minimum}
+                          onChange={(e) =>
+                            setMovementForm((prev) => ({
+                              ...prev,
+                              minimum: e.target.value,
+                            }))
+                          }
+                        />
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : (
-                <div className="mt-4 grid gap-3 md:grid-cols-4">
-                  <input className="rounded-2xl border px-3 py-2" placeholder="Catégorie" value={movementForm.category} onChange={(e) => setMovementForm((prev) => ({ ...prev, category: e.target.value }))} />
-                  <input className="rounded-2xl border px-3 py-2" placeholder="Type" value={movementForm.type} onChange={(e) => setMovementForm((prev) => ({ ...prev, type: e.target.value }))} />
-                  <input className="rounded-2xl border px-3 py-2" placeholder="Quantité" value={movementForm.quantity} onChange={(e) => setMovementForm((prev) => ({ ...prev, quantity: e.target.value }))} />
-                  <input className="rounded-2xl border px-3 py-2" placeholder="Prix (si entrée)" value={movementForm.price} onChange={(e) => setMovementForm((prev) => ({ ...prev, price: e.target.value }))} />
+                <div className="mt-4 space-y-3">
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <input
+                      className="rounded-2xl border px-3 py-2"
+                      placeholder="Catégorie"
+                      value={movementForm.category}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({ ...prev, category: e.target.value }))
+                      }
+                    />
+                    <input
+                      className="rounded-2xl border px-3 py-2"
+                      placeholder="Type"
+                      value={movementForm.type}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({ ...prev, type: e.target.value }))
+                      }
+                    />
+                    <input
+                      className="rounded-2xl border px-3 py-2"
+                      placeholder="Quantité"
+                      value={movementForm.quantity}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({ ...prev, quantity: e.target.value }))
+                      }
+                    />
+                    <input
+                      className="rounded-2xl border px-3 py-2"
+                      placeholder="Prix (si entrée)"
+                      value={movementForm.price}
+                      onChange={(e) =>
+                        setMovementForm((prev) => ({ ...prev, price: e.target.value }))
+                      }
+                    />
+                  </div>
+
+                  {movementForm.movementType === "Entrée" && (
+                    <div className="rounded-2xl bg-slate-50 p-3">
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={movementForm.useMinimum}
+                          onChange={(e) =>
+                            setMovementForm((prev) => ({
+                              ...prev,
+                              useMinimum: e.target.checked,
+                              minimum: e.target.checked ? prev.minimum : "",
+                            }))
+                          }
+                        />
+                        Activer stock minimum
+                      </label>
+
+                      {movementForm.useMinimum && (
+                        <input
+                          className="mt-3 w-full rounded-2xl border px-3 py-2"
+                          placeholder="Stock minimum"
+                          value={movementForm.minimum}
+                          onChange={(e) =>
+                            setMovementForm((prev) => ({
+                              ...prev,
+                              minimum: e.target.value,
+                            }))
+                          }
+                        />
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
-              <button onClick={handleMovement} className="mt-4 rounded-2xl bg-[#9f7aea] px-4 py-2 text-white">
+              <button
+                onClick={handleMovement}
+                className="mt-4 rounded-2xl bg-[#9f7aea] px-4 py-2 text-white"
+              >
                 Valider
               </button>
             </div>
